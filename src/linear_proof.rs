@@ -161,6 +161,7 @@ impl LinearProof {
         })
     }
 
+    /// Verify a linear proof
     pub fn verify(
         &self,
         transcript: &mut Transcript,
