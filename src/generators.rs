@@ -13,6 +13,8 @@ use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::traits::MultiscalarMul;
 use digest::{ExtendableOutput, Input, XofReader};
+use serde::de::{Deserialize, Deserializer};
+use serde::ser::{Serialize, SerializeStruct, Serializer};
 use sha3::{Sha3XofReader, Sha3_512, Shake256};
 
 /// Represents a pair of base points for Pedersen commitments.
@@ -38,6 +40,65 @@ impl PedersenGens {
     /// Creates a Pedersen commitment using the value scalar and a blinding factor.
     pub fn commit(&self, value: Scalar, blinding: Scalar) -> RistrettoPoint {
         RistrettoPoint::multiscalar_mul(&[value, blinding], &[self.B, self.B_blinding])
+    }
+}
+
+impl Serialize for PedersenGens {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("PedersenGens", 2)?;
+        state.serialize_field("B", &self.B)?;
+        state.serialize_field("B_blinding", &self.B_blinding)?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for PedersenGens {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = PedersenGens;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("PedersenGens struct")
+            }
+
+            fn visit_map<M>(self, mut map: M) -> Result<PedersenGens, M::Error>
+            where
+                M: serde::de::MapAccess<'de>,
+            {
+                let mut B = None;
+                let mut B_blinding = None;
+
+                while let Some(key) = map.next_key()? {
+                    match key {
+                        "B" => {
+                            B = Some(map.next_value()?);
+                        }
+                        "B_blinding" => {
+                            B_blinding = Some(map.next_value()?);
+                        }
+                        _ => {
+                            // Ignore unknown fields
+                            let _ = map.next_value::<serde::de::IgnoredAny>();
+                        }
+                    }
+                }
+
+                let B = B.ok_or_else(|| serde::de::Error::missing_field("B"))?;
+                let B_blinding = B_blinding.ok_or_else(|| serde::de::Error::missing_field("h"))?;
+
+                Ok(PedersenGens { B, B_blinding })
+            }
+        }
+
+        deserializer.deserialize_struct("PedersenGens", &["B", "B_blinding"], Visitor)
     }
 }
 
@@ -226,6 +287,88 @@ impl BulletproofGens {
     }
 }
 
+impl Serialize for BulletproofGens {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("BulletproofGens", 4)?;
+        state.serialize_field("gens_capacity", &self.gens_capacity)?;
+        state.serialize_field("party_capacity", &self.party_capacity)?;
+        state.serialize_field("G_vec", &self.G_vec)?;
+        state.serialize_field("H_vec", &self.H_vec)?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for BulletproofGens {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = BulletproofGens;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("BulletproofGens struct")
+            }
+
+            fn visit_map<M>(self, mut map: M) -> Result<BulletproofGens, M::Error>
+            where
+                M: serde::de::MapAccess<'de>,
+            {
+                let mut gens_capacity = None;
+                let mut party_capacity = None;
+                let mut G_vec = None;
+                let mut H_vec = None;
+
+                while let Some(key) = map.next_key()? {
+                    match key {
+                        "gens_capacity" => {
+                            gens_capacity = Some(map.next_value()?);
+                        }
+                        "party_capacity" => {
+                            party_capacity = Some(map.next_value()?);
+                        }
+                        "G_vec" => {
+                            G_vec = Some(map.next_value()?);
+                        }
+                        "H_vec" => {
+                            H_vec = Some(map.next_value()?);
+                        }
+                        _ => {
+                            // Ignore unknown fields
+                            let _ = map.next_value::<serde::de::IgnoredAny>();
+                        }
+                    }
+                }
+
+                let gens_capacity = gens_capacity
+                    .ok_or_else(|| serde::de::Error::missing_field("gens_capacity"))?;
+                let party_capacity = party_capacity
+                    .ok_or_else(|| serde::de::Error::missing_field("party_capacity"))?;
+                let G_vec = G_vec.ok_or_else(|| serde::de::Error::missing_field("G_vec"))?;
+                let H_vec = H_vec.ok_or_else(|| serde::de::Error::missing_field("H_vec"))?;
+
+                Ok(BulletproofGens {
+                    gens_capacity,
+                    party_capacity,
+                    G_vec,
+                    H_vec,
+                })
+            }
+        }
+
+        deserializer.deserialize_struct(
+            "BulletproofGens",
+            &["gens_capacity", "party_capacity", "G_vec", "H_vec"],
+            Visitor,
+        )
+    }
+}
+
 struct AggregatedGensIter<'a> {
     array: &'a Vec<Vec<RistrettoPoint>>,
     n: usize,
@@ -352,5 +495,46 @@ mod tests {
         helper(64, 8);
         helper(32, 8);
         helper(16, 8);
+    }
+
+    #[test]
+    fn serialize_pedersen_gens() {
+        let pedersen_gens = PedersenGens::default();
+
+        let json_string = serde_json::to_string(&pedersen_gens).unwrap();
+        let compare: String = String::from("{\"B\":[226,242,174,10,106,188,78,113,168,132,169,97,197,0,81,95,88,227,11,106,165,130,221,141,182,166,89,69,224,141,45,118],\"B_blinding\":[140,146,64,180,86,169,230,220,101,195,119,161,4,141,116,95,148,160,140,219,127,68,203,205,123,70,243,64,72,135,17,52]}");
+
+        assert_eq!(json_string, compare);
+    }
+
+    #[test]
+    fn deserialize_pedersen_gens() {
+        let json_string: String = String::from("{\"B\":[226,242,174,10,106,188,78,113,168,132,169,97,197,0,81,95,88,227,11,106,165,130,221,141,182,166,89,69,224,141,45,118],\"B_blinding\":[140,146,64,180,86,169,230,220,101,195,119,161,4,141,116,95,148,160,140,219,127,68,203,205,123,70,243,64,72,135,17,52]}");
+
+        let pedersen_gens: PedersenGens = serde_json::from_str(&json_string).unwrap();
+        let default_pedersen_gens = PedersenGens::default();
+
+        assert_eq!(pedersen_gens.B, default_pedersen_gens.B);
+        assert_eq!(pedersen_gens.B_blinding, default_pedersen_gens.B_blinding);
+    }
+
+    #[test]
+    fn serialize_deserialize_bulletproof_gens() {
+        let bulletproof_gens = BulletproofGens::new(64, 1);
+
+        let json_string = serde_json::to_string(&bulletproof_gens).unwrap();
+        let generated_bulletproof_gens: BulletproofGens =
+            serde_json::from_str(&json_string).unwrap();
+
+        assert_eq!(
+            bulletproof_gens.gens_capacity,
+            generated_bulletproof_gens.gens_capacity
+        );
+        assert_eq!(
+            bulletproof_gens.party_capacity,
+            generated_bulletproof_gens.party_capacity
+        );
+        assert_eq!(bulletproof_gens.G_vec, generated_bulletproof_gens.G_vec);
+        assert_eq!(bulletproof_gens.H_vec, generated_bulletproof_gens.H_vec);
     }
 }
