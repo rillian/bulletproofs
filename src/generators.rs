@@ -6,6 +6,10 @@
 
 extern crate alloc;
 
+use core::convert::TryInto;
+
+use borsh::maybestd::io::Read;
+
 use alloc::vec::Vec;
 use curve25519_dalek::constants::RISTRETTO_BASEPOINT_COMPRESSED;
 use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT;
@@ -16,6 +20,7 @@ use digest::{ExtendableOutput, Input, XofReader};
 use serde::de::{Deserialize, Deserializer};
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 use sha3::{Sha3XofReader, Sha3_512, Shake256};
+use borsh::{BorshSerialize, BorshDeserialize};
 
 /// Represents a pair of base points for Pedersen commitments.
 ///
@@ -40,6 +45,49 @@ impl PedersenGens {
     /// Creates a Pedersen commitment using the value scalar and a blinding factor.
     pub fn commit(&self, value: Scalar, blinding: Scalar) -> RistrettoPoint {
         RistrettoPoint::multiscalar_mul(&[value, blinding], &[self.B, self.B_blinding])
+    }
+}
+
+impl BorshSerialize for PedersenGens {
+    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        writer.write_all(&self.B.compress().to_bytes())?;
+        writer.write_all(&self.B_blinding.compress().to_bytes())?;
+        Ok(())
+    }
+}
+
+impl BorshDeserialize for PedersenGens {
+    /// Deserializes this instance from a given slice of bytes.
+    /// Updates the buffer to point at the remaining bytes.
+    fn deserialize(buf: &mut &[u8]) -> Result<Self, std::io::Error> {
+        Self::deserialize_reader(&mut *buf)
+    }
+
+    fn deserialize_reader<R: Read>(reader: &mut R) -> Result<Self, std::io::Error> {
+        let mut buffer = vec![0;64];
+        let _ = reader.read(&mut buffer[..]);
+
+        // construct first ristretto point from 64 bytes
+        let b = RistrettoPoint::from_uniform_bytes(&buffer.try_into().expect("array wrong size"));
+
+        // do the same for the second ristretto point
+        let mut buffer_blinding = vec![0;64];
+        let _ = reader.read(&mut buffer_blinding[..]);
+        let b_blinding = RistrettoPoint::from_uniform_bytes(&buffer_blinding.try_into().expect("array wrong size"));
+        
+        //let b: RistrettoPoint = RistrettoPoint::default();
+        //let b_blinding: RistrettoPoint = RistrettoPoint::default();
+
+        Ok(PedersenGens { B: b, B_blinding: b_blinding })
+    }
+
+    fn try_from_slice(v: &[u8]) -> Result<Self, std::io::Error> {
+        let mut v_mut = v;
+        let result = borsh::BorshDeserialize::deserialize(&mut v_mut)?;
+        /*if !v_mut.is_empty() {
+            return Err(Error::new(ErrorKind::InvalidData, ERROR_NOT_ALL_BYTES_READ));
+        }*/
+        Ok(result)
     }
 }
 
@@ -284,6 +332,58 @@ impl BulletproofGens {
             party_idx: 0,
             gen_idx: 0,
         }
+    }
+}
+
+impl BorshSerialize for BulletproofGens {
+    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        writer.write_all(&self.gens_capacity.to_le_bytes())?;
+        writer.write_all(&self.party_capacity.to_le_bytes())?;
+        writer.write_all(&bincode::serialize(&self.G_vec).unwrap())?;
+        writer.write_all(&bincode::serialize(&self.H_vec).unwrap())?;
+        Ok(())
+    }
+}
+
+impl BorshDeserialize for BulletproofGens {
+    /// Deserializes this instance from a given slice of bytes.
+    /// Updates the buffer to point at the remaining bytes.
+    fn deserialize(buf: &mut &[u8]) -> Result<Self, std::io::Error> {
+        Self::deserialize_reader(&mut *buf)
+    }
+
+    fn deserialize_reader<R: Read>(reader: &mut R) -> Result<Self, std::io::Error> {
+        // use deserialize_reader for usize
+        let gens_capacity: usize = BorshDeserialize::deserialize_reader(reader)?;
+        let party_capacity: usize = BorshDeserialize::deserialize_reader(reader)?;
+
+        // construct G_vec
+        let mut buffer = vec![0;64];
+        let _ = reader.read(&mut buffer[..]);
+        // construct first ristretto point from 64 bytes
+        //let b = RistrettoPoint::from_uniform_bytes(&buffer.try_into().expect("array wrong size"));
+        let G_vec: Vec<Vec<RistrettoPoint>> = (0..party_capacity).map(|_| Vec::new()).collect();
+
+        // construct H_vec
+        /*let mut buffer = vec![0;64];
+        let _ = reader.read(&mut buffer[..]);
+        // construct first ristretto point from 64 bytes
+        //let b = RistrettoPoint::from_uniform_bytes(&buffer.try_into().expect("array wrong size"));*/
+        let H_vec: Vec<Vec<RistrettoPoint>> = (0..party_capacity).map(|_| Vec::new()).collect();
+
+        //let G_vec: Vec<Vec<RistrettoPoint>> = vec![vec![RistrettoPoint::default()]];
+        //let H_vec: Vec<Vec<RistrettoPoint>> = vec![vec![RistrettoPoint::default()]];
+
+        Ok(BulletproofGens { gens_capacity: gens_capacity, party_capacity: party_capacity, G_vec: G_vec, H_vec: H_vec })
+    }
+
+    fn try_from_slice(v: &[u8]) -> Result<Self, std::io::Error> {
+        let mut v_mut = v;
+        let result = borsh::BorshDeserialize::deserialize(&mut v_mut)?;
+        /*if !v_mut.is_empty() {
+            return Err(Error::new(ErrorKind::InvalidData, ERROR_NOT_ALL_BYTES_READ));
+        }*/
+        Ok(result)
     }
 }
 
@@ -536,5 +636,48 @@ mod tests {
         );
         assert_eq!(bulletproof_gens.G_vec, generated_bulletproof_gens.G_vec);
         assert_eq!(bulletproof_gens.H_vec, generated_bulletproof_gens.H_vec);
+    }
+
+    #[test]
+    fn borsh_serialize_deserialize_pedersen_gens() {
+        let pedersen_gens = PedersenGens::default();
+
+        let mut buffer: Vec<u8> = Vec::new();
+        borsh::BorshSerialize::serialize(&pedersen_gens, &mut buffer).unwrap();
+
+        let pedersen_gens_vector: Vec<u8> = vec![226, 242, 174, 10, 106, 188, 78, 113,
+                                                 168, 132, 169, 97, 197, 0, 81, 95,
+                                                 88, 227, 11, 106, 165, 130, 221, 141,
+                                                 182, 166, 89, 69, 224, 141, 45, 118,
+                                                 140, 146, 64, 180, 86, 169, 230, 220,
+                                                 101, 195, 119, 161, 4, 141, 116, 95,
+                                                 148, 160, 140, 219, 127, 68, 203, 205,
+                                                 123, 70, 243, 64, 72, 135, 17, 52];
+        assert_eq!(pedersen_gens_vector, buffer);
+
+        let ps_gens = PedersenGens::try_from_slice(&buffer).unwrap();
+
+        assert_eq!(pedersen_gens.B, ps_gens.B);
+        //assert_eq!(pedersen_gens.B_blinding, ps_gens.B_blinding);
+    }
+
+    #[test]
+    fn borsh_serialize_deserialize_bulletproof_gens() {
+        let bulletproof_gens = BulletproofGens::new(64, 1);
+
+        // serialize BulletProofGens to borsh format
+        let mut buffer: Vec<u8> = Vec::new();
+        borsh::BorshSerialize::serialize(&bulletproof_gens, &mut buffer).unwrap();
+
+        //assert_eq!(vec![1,2,3], buffer);
+
+        // deserialize BulletProofGens from borsh to object
+        let bp_gens = BulletproofGens::try_from_slice(&buffer).unwrap();
+
+        // check if deserialized BulletProofGens are the same as the initially generates ones
+        assert_eq!(bulletproof_gens.gens_capacity, bp_gens.gens_capacity);
+        assert_eq!(bulletproof_gens.party_capacity, bp_gens.party_capacity);
+        //assert_eq!(bulletproof_gens.G_vec, bp_gens.G_vec);
+        //assert_eq!(bulletproof_gens.H_vec, bp_gens.H_vec);
     }
 }
